@@ -1,10 +1,18 @@
 import sqlite3
-import os
+import os, csv, json
+import xml.etree.ElementTree as ET
 
-__version__ = "0.1.3" # 2025/02
+__version__ = "0.1.5" # 2025/02
 
-# Main database file (persistent storage)
-DB_FILE = "main.sql"
+
+DEBUG = False
+DB_FILE = "main.sql" # Main database file (persistent storage)
+EXPORT_DIR = "export"
+
+# Ensure the export directory exists
+if not os.path.exists(EXPORT_DIR):
+    os.makedirs(EXPORT_DIR)
+
 conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
 
@@ -27,7 +35,8 @@ COMMANDS = {
     "USE": "USE",
     "SQL": "SQL",
     "STRU": "STRUCT",
-    "MODI": "MODIF"
+    "MODI": "MODIF",
+    "EXPO": "EXPORT"
 }
 
 SQL_TRANSLATION = {
@@ -309,6 +318,87 @@ def execute_command(command):
                 print("Filename is missing.")
                 return True
             execute_file(words[1])
+
+        elif base_command == "EXPORT":
+            if active_table is None:
+                print("No table selected. Use 'USE <table>' first.")
+                return True
+            if len(words) < 2:
+                print("Missing filename for EXPORT. Use: EXPORT <file>")
+                return True
+
+            # Ensure export directory exists
+            if not os.path.exists(EXPORT_DIR):
+                os.makedirs(EXPORT_DIR)
+                print(f"DEBUG: Created export directory → {EXPORT_DIR}")
+
+            filename = words[1].strip()
+            file_extension = filename.split(".")[-1].lower()
+
+            # Correctly set full path for export file
+            file_path = os.path.join(EXPORT_DIR, filename)
+
+            try:
+                query = f"SELECT * FROM {active_table}"
+                print(f"DEBUG: Active table → {active_table}")
+                print(f"DEBUG: Executing SQL → {query}")  # Debug output
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                column_names = [desc[0] for desc in cursor.description]
+
+                if not rows:
+                    print(f"WARNING: No data found in '{active_table}', nothing to export.")
+                    return True
+
+                if file_extension == "json":
+                    # Export to JSON
+                    try:
+                        data = [dict(zip(column_names, row)) for row in rows]
+                        with open(file_path, "w", encoding="utf-8") as json_file:
+                            json.dump(data, json_file, indent=4)
+                        print(f"SUCCESS: Data exported to '{file_path}' in JSON format.")
+                    except Exception as e:
+                        print(f"ERROR: Failed to export JSON → {e}")
+
+                elif file_extension == "csv":
+                    # Export to CSV
+                    try:
+                        with open(file_path, "w", newline='', encoding="utf-8") as csv_file:
+                            writer = csv.writer(csv_file)
+                            writer.writerow(column_names)  # Write headers
+                            writer.writerows(rows)  # Write data
+                        print(f"SUCCESS: Data exported to '{file_path}' in CSV format.")
+                    except Exception as e:
+                        print(f"ERROR: Failed to export CSV → {e}")
+
+                elif file_extension == "xml":
+                    # Export to XML
+                    try:
+                        root = ET.Element("table", name=active_table)
+                        for row in rows:
+                            row_elem = ET.SubElement(root, "row")
+                            for col_name, value in zip(column_names, row):
+                                col_elem = ET.SubElement(row_elem, col_name)
+                                col_elem.text = str(value) if value is not None else ""
+
+                        # Manually format XML with newlines after </row>
+                        xml_str = ET.tostring(root, encoding="utf-8").decode()
+                        xml_str = '<?xml version="1.0" encoding="utf-8"?>\n' + xml_str
+                        xml_str = xml_str.replace("</row>", "</row>\n")  # Ensure newlines between rows
+
+                        with open(file_path, "w", encoding="utf-8") as xml_file:
+                            xml_file.write(xml_str)
+
+                        print(f"SUCCESS: Data exported to '{file_path}' in XML format.")
+
+                    except Exception as e:
+                        print(f"ERROR: Failed to export XML → {e}")
+
+                else:
+                    print(f"ERROR: Unsupported file format '{file_extension}'. Use .csv, .json, or .xml")
+
+            except sqlite3.Error as e:
+                print(f"SQL Error: {e}")
         
         elif base_command == "HELP":
             print("""
