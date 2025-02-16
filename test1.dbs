@@ -1,0 +1,13 @@
+DROP emplo
+CREA emplo
+USE emplo
+INSE INTO emplo (data) VALUES ('Alice')
+INSE INTO emplo (data) VALUES ('Bob')
+STRUCT
+LIST
+MODIF ADD age INTEGER
+STRUCT
+INSE INTO emplo (data,age) VALUES ('Charlie',21)
+LIST
+DELE WHERE id=2
+LIST
