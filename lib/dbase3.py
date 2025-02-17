@@ -3,7 +3,7 @@ import os, csv, json
 import xml.etree.ElementTree as ET
 
 
-__version__ = "0.2.1" # 2025/02
+__version__ = "0.2.2" # 2025/02
 
 HELP_TXT = """
     -------------------
@@ -95,6 +95,7 @@ class Db3:
                         print("-" * 30)  # Separator after each command
         except Exception as e:
             print(f"Error executing file: {e}")
+
     def cmd_use(self, table_name):
         """Sets the active table for operations."""
         if not table_name:
@@ -103,11 +104,22 @@ class Db3:
         self.active_table = table_name
         print(f"Using table '{table_name}'.")
 
-    def cmd_showx(self):
-        """Lists all tables in the database."""
-        tables = self.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        print("Tables:", [t[0] for t in tables] if tables else "No tables found.")
-    
+    def create(self, table_name, column_definitions):
+        """
+        example: create("test", "(datum DATE, text TEXT, num INTEGER)")
+        """
+        query = f"CREATE TABLE {table_name} {column_definitions}"
+        
+        if self.debug_mode:
+            print(f"DEBUG: Executing SQL → {query}")
+        
+        try:
+            self.cursor.execute(query)
+            self.conn.commit()
+            print(f"Table '{table_name}' created.")
+        except sqlite3.Error as e:
+            print(f"SQL Error: {e}")
+
     def cmd_show(self):
         """Lists all tables in the database and highlights the active one."""
         tables = self.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -132,6 +144,43 @@ class Db3:
             print("No table selected. Use 'USE <table>' first.")
             return
         self.execute_dbase_command("STRUCT")
+
+    def select(self, condition=""):
+        """
+        Performs a SELECT query on the active table using the given condition.
+        For example: select('WHERE datum LIKE "2025%" ORDER BY datum DESC').
+        Prints each record in a "val1 | val2 | ..." style and returns a list of lists.
+        """
+        if not self.active_table:
+            print("No active table selected. Use 'USE <table>' first.")
+            return []
+
+        # Build the SELECT statement including the optional condition
+        query = f"SELECT * FROM {self.active_table} {condition}"
+
+        if self.debug_mode:
+            print(f"DEBUG: SQL → {query}")
+
+        rows = self.execute(query)
+        if rows is None:
+            return []
+
+        if not rows:
+            print("No rows found.")
+            return []
+
+        # Convert each row to a list (rather than a dict) and print it
+        data_list = []
+        for row in rows:
+            # row is typically a tuple (datum, txt, num, etc.)
+            row_list = list(row)  # or keep it as tuple if you prefer
+            data_list.append(row_list)
+            
+            # Print in the format "val1 | val2 | val3"
+            print(" | ".join(str(cell) for cell in row_list))
+
+        # Return the list of lists for further processing
+        return data_list
 
     def cmd_list(self):
         """Lists all rows in the active table."""
