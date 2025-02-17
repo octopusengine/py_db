@@ -1,0 +1,16 @@
+show
+crea test
+CREATE test2 (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)
+use test
+struct
+
+show
+use test
+INSE INTO test (data) VALUES ('Alice') 
+
+dele where id=6
+dele where data="Alice6"
+
+MODIF ADD age2 INTEGER 
+MODIF ADD dd DATETIME  
+
