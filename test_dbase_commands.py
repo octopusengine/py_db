@@ -73,6 +73,105 @@ class Db3CommandTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_create_accepts_a_sql_schema_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "py_dbase.json")
+            script_path = os.path.join(directory, "schema.sql")
+            db_path = os.path.join(directory, "cli.db")
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                json.dump(
+                    {"data_path": directory, "default_database": "cli.db", "debug": False},
+                    config_file,
+                )
+            with open(script_path, "w", encoding="utf-8") as script_file:
+                script_file.write(
+                    "CREATE TABLE projects (id INTEGER PRIMARY KEY);\n"
+                    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, project_id INTEGER);\n"
+                )
+
+            output = io.StringIO()
+            with (
+                patch.object(py_dbase, "CONFIG_FILE", config_path),
+                patch.object(sys, "argv", ["py_dbase.py", "--crea", "schema.sql", "--list"]),
+                redirect_stdout(output),
+            ):
+                status = py_dbase.main()
+
+            database = Db3(db_path, export_dir=directory)
+            self.assertTrue(database.table_exists("projects"))
+            self.assertTrue(database.table_exists("tasks"))
+            database.close()
+        self.assertEqual(status, 0)
+        self.assertIn("SQL definition script executed.", output.getvalue())
+
+    def test_json_schema_supports_constraints_defaults_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Db3(os.path.join(directory, "schema.db"), export_dir=directory)
+            with redirect_stdout(io.StringIO()):
+                database.create("projects", "(id INTEGER PRIMARY KEY)")
+            definition_path = os.path.join(directory, "tasks_schema.json")
+            with open(definition_path, "w", encoding="utf-8") as definition_file:
+                json.dump(
+                    {
+                        "table": "tasks",
+                        "columns": [
+                            {"field": "uid", "description": "Technical key"},
+                            {
+                                "field": "project_id",
+                                "type": "INTEGER",
+                                "not_null": True,
+                                "foreign_key": {"table": "projects", "field": "id"},
+                                "description": "Owning project",
+                            },
+                            {
+                                "field": "parent_id",
+                                "type": "INTEGER",
+                                "foreign_key": "projects(id)",
+                            },
+                            {
+                                "field": "code",
+                                "type": "VARCHAR(20)",
+                                "not_null": True,
+                                "default": "new",
+                                "unique": True,
+                                "description": "External code",
+                            },
+                            {"field": "active", "type": "BOOLEAN", "default": True},
+                        ],
+                    },
+                    definition_file,
+                )
+
+            with redirect_stdout(io.StringIO()):
+                py_dbase.create_table_from_definition(database, directory, "tasks_schema.json")
+
+            columns = {row[1]: row for row in database.execute("PRAGMA table_info(tasks)")}
+            self.assertEqual(columns["project_id"][2:5], ("INTEGER", 1, None))
+            self.assertEqual(columns["code"][2:5], ("VARCHAR(20)", 1, "'new'"))
+            self.assertEqual(columns["active"][4], "1")
+            foreign_keys = database.execute("PRAGMA foreign_key_list(tasks)")
+            self.assertEqual(
+                {(key[2], key[3], key[4]) for key in foreign_keys},
+                {("projects", "project_id", "id"), ("projects", "parent_id", "id")},
+            )
+            indexes = database.execute("PRAGMA index_list(tasks)")
+            self.assertTrue(any(index[2] for index in indexes))
+            database.close()
+
+    def test_json_schema_rejects_unsafe_column_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Db3(os.path.join(directory, "schema.db"), export_dir=directory)
+            definition_path = os.path.join(directory, "invalid_schema.json")
+            with open(definition_path, "w", encoding="utf-8") as definition_file:
+                json.dump(
+                    {"table": "invalid", "columns": [{"field": "value", "type": "TEXT; DROP TABLE x"}]},
+                    definition_file,
+                )
+
+            with self.assertRaisesRegex(ValueError, "type"):
+                py_dbase.create_table_from_definition(database, directory, "invalid_schema.json")
+            database.close()
+
     def test_list_json_is_machine_readable_and_returns_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = os.path.join(directory, "py_dbase.json")

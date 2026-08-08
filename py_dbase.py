@@ -50,8 +50,8 @@ def parse_arguments():
         "-c",
         "--crea",
         "--create",
-        metavar="DEFINITION.json",
-        help="create a table from a JSON definition in the configured data directory",
+        metavar="DEFINITION.json|.sql",
+        help="create tables from a JSON definition or SQL script in the configured data directory",
     )
     parser.add_argument(
         "-l",
@@ -101,11 +101,19 @@ def data_file(data_dir, filename):
 
 
 def create_table_from_definition(database, data_dir, filename):
-    """Read a JSON definition and ask the database wrapper to create its table."""
+    """Create tables from a JSON definition or a SQL script in the data directory."""
 
     definition_path = data_file(data_dir, filename)
     if not os.path.isfile(definition_path):
         raise FileNotFoundError(f"Definition file '{definition_path}' was not found.")
+
+    extension = os.path.splitext(filename)[1].lower()
+    if extension == ".sql":
+        with open(definition_path, "r", encoding="utf-8") as definition_file:
+            database.execute_sql_script(definition_file.read())
+        return
+    if extension != ".json":
+        raise ValueError("Definition file must use the .json or .sql extension.")
 
     with open(definition_path, "r", encoding="utf-8") as definition_file:
         definition = json.load(definition_file)
@@ -114,15 +122,9 @@ def create_table_from_definition(database, data_dir, filename):
     if not isinstance(columns, list) or not columns:
         raise ValueError("JSON definition must contain a non-empty 'columns' list.")
 
-    fields = []
-    for column in columns:
-        if not isinstance(column, dict) or not isinstance(column.get("field"), str):
-            raise ValueError("Each item in 'columns' must contain a string 'field'.")
-        fields.append(column["field"])
-
     fallback_table_name = os.path.splitext(os.path.basename(filename))[0]
     table_name = definition.get("table", fallback_table_name)
-    database.create_table_from_fields(table_name, fields)
+    database.create_table_from_columns(table_name, columns)
 
 
 def main():

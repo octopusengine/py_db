@@ -2,6 +2,7 @@
 
 import csv
 import json
+import math
 import os
 import re
 import sqlite3
@@ -9,7 +10,7 @@ import xml.etree.ElementTree as ET
 
 from .wrapp_terminal import Terminal
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 COMMANDS = {
     "CREA": "CREATE",
@@ -72,6 +73,68 @@ def _valid_identifier(name):
         and not name[0].isdigit()
         and name.replace("_", "").isalnum()
     )
+
+
+_COLUMN_TYPE_PATTERN = re.compile(
+    r"^(INTEGER|TEXT|REAL|BLOB|NUMERIC|BOOLEAN|DATE|DATETIME|CHAR|VARCHAR|"
+    r"DECIMAL|FLOAT|DOUBLE|DOUBLE PRECISION)(?:\(\d+(?:\s*,\s*\d+)?\))?$",
+    re.IGNORECASE,
+)
+
+
+def _column_type(value):
+    """Validate one JSON column type and return its normalized SQL spelling."""
+
+    if not isinstance(value, str) or not _COLUMN_TYPE_PATTERN.fullmatch(value.strip()):
+        raise ValueError(
+            "Column 'type' must be a supported SQLite type, optionally with a size "
+            "such as VARCHAR(100) or DECIMAL(10, 2)."
+        )
+    return re.sub(r"\s+", " ", value.strip().upper())
+
+
+def _default_sql(value):
+    """Convert a JSON primitive to a safe SQLite DEFAULT expression."""
+
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("Column 'default' must not be NaN or infinity.")
+        return repr(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    raise ValueError("Column 'default' must be a JSON string, number, boolean, or null.")
+
+
+def _foreign_key_sql(value):
+    """Validate a JSON foreign-key declaration and return a REFERENCES clause."""
+
+    if isinstance(value, str):
+        match = re.fullmatch(
+            r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*",
+            value,
+        )
+        if match:
+            table_name, field_name = match.groups()
+        else:
+            table_name = field_name = None
+    elif isinstance(value, dict):
+        table_name = value.get("table")
+        field_name = value.get("field")
+    else:
+        table_name = field_name = None
+
+    if not _valid_identifier(table_name) or not _valid_identifier(field_name):
+        raise ValueError(
+            "Column 'foreign_key' must be 'table(field)' or "
+            "{'table': 'table', 'field': 'field'}."
+        )
+    return f"REFERENCES {_quote_identifier(table_name)} ({_quote_identifier(field_name)})"
 
 
 def _split_sql_items(text):
@@ -187,6 +250,7 @@ class Db3:
         self.debug_mode = debug
         self.term = terminal or Terminal()
         self.conn = sqlite3.connect(self.db_file)
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
         self.active_table = None
         os.makedirs(self.export_dir, exist_ok=True)
@@ -235,19 +299,56 @@ class Db3:
         return True
 
     def create_table_from_fields(self, table_name, fields):
-        """Create a JSON-defined table when it does not already exist."""
+        """Create a legacy JSON-defined table with TEXT fields and a uid key."""
+
+        return self.create_table_from_columns(
+            table_name, [{"field": field} for field in fields]
+        )
+
+    def create_table_from_columns(self, table_name, columns):
+        """Create a table from validated JSON column definitions."""
 
         if not _valid_identifier(table_name):
             raise ValueError(f"Invalid table name '{table_name}'.")
-        if not fields or any(not _valid_identifier(field) for field in fields):
-            raise ValueError("JSON fields must be valid non-empty identifiers.")
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("JSON definition must contain a non-empty 'columns' list.")
+
+        fields = []
+        definitions = []
+        for column in columns:
+            if not isinstance(column, dict):
+                raise ValueError("Each item in 'columns' must be an object.")
+            field = column.get("field")
+            if not _valid_identifier(field):
+                raise ValueError("JSON fields must be valid non-empty identifiers.")
+            fields.append(field)
+
+            for property_name in ("not_null", "unique"):
+                if property_name in column and not isinstance(column[property_name], bool):
+                    raise ValueError(f"Column '{property_name}' must be true or false.")
+            if "description" in column and not isinstance(column["description"], str):
+                raise ValueError("Column 'description' must be a string.")
+
+            if field == "uid":
+                if "type" in column and _column_type(column["type"]) != "INTEGER":
+                    raise ValueError("The special 'uid' field must use type INTEGER.")
+                definition = f"{_quote_identifier(field)} INTEGER PRIMARY KEY"
+            else:
+                field_type = _column_type(column.get("type", "TEXT"))
+                definition = f"{_quote_identifier(field)} {field_type}"
+
+            if column.get("not_null", False):
+                definition += " NOT NULL"
+            if "default" in column:
+                definition += f" DEFAULT {_default_sql(column['default'])}"
+            if column.get("unique", False):
+                definition += " UNIQUE"
+            if "foreign_key" in column:
+                definition += " " + _foreign_key_sql(column["foreign_key"])
+            definitions.append(definition)
+
         if len(set(fields)) != len(fields):
             raise ValueError("JSON fields must not contain duplicates.")
-
-        definitions = [
-            f"{_quote_identifier(field)} {'INTEGER PRIMARY KEY' if field == 'uid' else 'TEXT'}"
-            for field in fields
-        ]
         query = (
             f"CREATE TABLE IF NOT EXISTS {_quote_identifier(table_name)} "
             f"({', '.join(definitions)})"
@@ -256,6 +357,17 @@ class Db3:
         self.cursor.execute(query)
         self.conn.commit()
         print(f"Table '{table_name}' created from JSON definition.")
+        return True
+
+    def execute_sql_script(self, script):
+        """Execute a trusted SQL schema script used with the --create option."""
+
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("SQL definition file must not be empty.")
+        self._debug(script)
+        self.conn.executescript(script)
+        print("SQL definition script executed.")
+        return True
 
     def cmd_show(self, output_format="text"):
         self.cursor.execute(

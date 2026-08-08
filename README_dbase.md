@@ -24,7 +24,7 @@ This opens the configured default database and immediately displays the
 `pyDb>` prompt:
 
 ```text
-pyDb Emulator v0.4.0 (SQLite backend: ...\\data\\data.db)
+pyDb Emulator v0.5.0 (SQLite backend: ...\\data\\data.db)
 pyDb> SHOW
 No tables found.
 pyDb> EXIT
@@ -54,8 +54,8 @@ Tables in database:
 ```
 
 The `USE` command selects one of those tables for commands that operate on the
-current table, such as `LIST`, `INSERT`, `DELETE`, `STRUCT`, `MODIF`, and
-`EXPORT`.
+current table, such as `LIST`, `FIND`, `LOCATE`, `INSERT`, `UPDATE`, `REPLACE`,
+`DELETE`, `STRUCT`, `MODIF`, and `EXPORT`.
 
 ```text
 pyDb> USE customers
@@ -121,10 +121,10 @@ It is therefore suitable for scripts. The CLI exits with status `0` after a
 successful operation, `1` for a startup/database error, and `2` for invalid
 configuration or command-line arguments.
 
-### Create a table from JSON
+### Create tables from JSON or SQL
 
-Use `--crea` to initialize a table from a JSON definition stored in the data
-directory:
+Use `--crea` to initialize tables from a JSON definition or a SQL script stored
+in the data directory:
 
 ```bash
 python py_dbase.py --crea tasks_base.json
@@ -136,22 +136,49 @@ JSON `table` property. If that property is absent, the JSON filename without
 its extension is used as a backward-compatible fallback.
 
 The definition must contain a non-empty `columns` list. Each entry needs a
-`field` value, which becomes the SQLite column name. Fields are created as
-`TEXT`, except `uid`, which is created as an `INTEGER PRIMARY KEY`. Other
-metadata, including `name` and `width`, remains available for application use
-but does not alter the SQLite schema.
+`field` value, which becomes the SQLite column name. Fields default to `TEXT`,
+except `uid`, which is created as an `INTEGER PRIMARY KEY`. The optional
+`type`, `not_null`, `default`, `unique`, and `foreign_key` properties create
+the corresponding SQLite schema constraints. `description`, like the existing
+`name` and `width` metadata, is validated but does not alter the SQLite schema.
 
 ```json
 {
   "version": 1,
   "table": "tasks",
   "columns": [
-    {"field": "uid", "name": "id", "width": 5},
-    {"field": "project", "name": "project", "width": 20},
-    {"field": "prompt", "name": "prompt", "width": 20}
+    {"field": "uid", "name": "id", "width": 5, "description": "Technical key"},
+    {
+      "field": "project_id",
+      "type": "INTEGER",
+      "not_null": true,
+      "foreign_key": {"table": "projects", "field": "id"},
+      "description": "Owning project"
+    },
+    {"field": "code", "type": "VARCHAR(20)", "not_null": true, "default": "new", "unique": true},
+    {"field": "prompt", "type": "TEXT", "default": null}
   ]
 }
 ```
+
+Supported types are `INTEGER`, `TEXT`, `REAL`, `BLOB`, `NUMERIC`, `BOOLEAN`,
+`DATE`, `DATETIME`, `CHAR`, `VARCHAR`, `DECIMAL`, `FLOAT`, and `DOUBLE`; types
+with a numeric size such as `VARCHAR(20)` and `DECIMAL(10, 2)` are also
+accepted. A foreign key can alternatively use the short form
+`"foreign_key": "projects(id)"`. Defaults accept JSON strings, numbers,
+booleans, and `null`; SQL expressions are intentionally not accepted.
+
+For an SQL schema file, `--crea` executes the complete script. This is useful
+when defining several tables or SQLite features not represented by the JSON
+schema. The repository includes the JSON-compatible example
+[`data/test_base.sql`](data/test_base.sql):
+
+```bash
+python py_dbase.py --crea test_base.sql
+```
+
+SQL scripts are executed as supplied, so use only trusted files from the
+configured data directory.
 
 Both startup options can be combined. This creates `tasks_base` in
 `data/projects.db`:
@@ -183,8 +210,8 @@ python py_dbase.py --name projects.db --crea tasks_base.json
 | `HELP` | Shows the built-in help. |
 | `EXIT` | Closes the prompt and database connection. |
 
-The following traditional abbreviations are recognized: `CREA`, `INSE`,
-`SELE`, `DELE`, `STRU`, `MODI`, and `EXPO`.
+The following abbreviations are recognized: `CREA`, `INSE`, `SELE`, `DELE`,
+`LOCA`, `UPDA`, `REPL`, `STRU`, `MODI`, and `EXPO`.
 
 ## Examples
 

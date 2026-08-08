@@ -1,7 +1,7 @@
 # pyDb Emulator vs. dBASE III PLUS
 
 Tento dokument srovnává pyDb Emulator s dBASE III PLUS, často zapisovaným jako
-dBASE III+. Popis odpovídá verzi pyDb **0.4.0**.
+dBASE III+. Popis odpovídá verzi pyDb **0.5.0**.
 
 pyDb není emulátor formátu DBF ani úplná implementace jazyka dBASE. Je to malý
 interaktivní shell inspirovaný stylem dBASE III+, který ukládá data do SQLite.
@@ -80,21 +80,23 @@ příkazu SQL.
 ### JSON definice tabulky
 
 Volby -c, --crea a --create vytvoří tabulku z JSON souboru v datové složce.
-Položka table určuje název tabulky a columns[].field určuje sloupce:
+Položka table určuje název tabulky a columns[].field určuje sloupce. Nepovinné
+vlastnosti type, not_null, default, unique a foreign_key vytvářejí odpovídající
+SQLite omezení; description je metadata pro aplikaci:
 
 ~~~
 {
   "table": "tasks",
   "columns": [
-    {"field": "uid"},
-    {"field": "project"},
-    {"field": "prompt"}
+    {"field": "uid", "description": "technický klíč"},
+    {"field": "project_id", "type": "INTEGER", "foreign_key": "projects(id)"},
+    {"field": "prompt", "type": "TEXT", "not_null": true, "default": ""}
   ]
 }
 ~~~
 
-Pole uid vznikne jako INTEGER PRIMARY KEY, ostatní pole jako TEXT. Tento JSON
-formát je vlastní pyDb, nikoli formát DBF.
+Pole uid vznikne jako INTEGER PRIMARY KEY, ostatní pole jako TEXT, není-li
+uveden typ. Tento JSON formát je vlastní pyDb, nikoli formát DBF.
 
 ## Co chybí nebo je jinak
 
@@ -146,7 +148,7 @@ více k dBASE kompatibilitě, nebo k pohodlnému SQLite nástroji.
 
 ### Lepší schéma
 
-- [ ] Rozšířit JSON o typ, NOT NULL, výchozí hodnotu, UNIQUE, cizí klíč a popis.
+- [x] Rozšířit JSON o typ, NOT NULL, výchozí hodnotu, UNIQUE, cizí klíč a popis.
 - [ ] Použít JSON width při LIST a STRUCT.
 - [ ] Přidat CREATE INDEX a SHOW INDEXES.
 - [ ] MODIF DROP změnit na migraci, která zachová indexy, triggery a omezení.
