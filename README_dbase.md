@@ -8,7 +8,9 @@ SQLite as its persistent storage engine.
 It is not a binary `.dbf` reader and does not aim to be a complete dBASE
 implementation. Think of it as a lightweight, dBASE-style front end to SQLite:
 tables, rows, and column types are SQLite objects, while the prompt provides a
-simple interactive workflow.
+simple interactive workflow. The command interpreter itself lives in
+`lib/wrapp_dbase3.py`; `py_dbase.py` is the configuration-aware command-line
+entry point.
 
 ## Quick start
 
@@ -91,6 +93,23 @@ This opens (or creates) `data/projects.db`; it does not change the default in
 `py_base.json`. The argument is a filename only, so database files always stay
 inside the configured data directory.
 
+To list tables without opening the interactive prompt:
+
+```bash
+python py_dbase.py --list
+python py_dbase.py --name projects.db --list
+```
+
+Short forms are available for the common command-line options:
+
+```bash
+python py_dbase.py -h          # help
+python py_dbase.py -v          # version
+python py_dbase.py -l          # list tables and exit
+python py_dbase.py -c tasks_base.json
+python py_dbase.py --create tasks_base.json
+```
+
 ### Create a table from JSON
 
 Use `--crea` to initialize a table from a JSON definition stored in the data
@@ -138,7 +157,7 @@ python py_dbase.py --name projects.db --crea tasks_base.json
 | `CREATE <table> (<columns>)` | Creates a table with explicit SQLite column definitions. |
 | `USE <table>` | Selects a table for commands that use the active table. |
 | `SHOW` | Lists all tables in the current database file. |
-| `LIST` | Displays all rows in the active table. |
+| `LIST [<col1> <col2> ...]` | Displays all rows, optionally limited to named columns, in the active table. |
 | `STRUCT` | Displays the active table's columns. |
 | `INSERT (columns) VALUES (values)` | Adds a row to the active table. |
 | `DELETE WHERE <condition>` | Deletes rows from the active table. |
@@ -197,6 +216,27 @@ pyDb> INSERT (category_id, name) VALUES (1, 'Keyboard')
 
 Changing the active table does not switch database files; it only changes the
 current table inside the already opened database.
+
+### List only selected columns
+
+Pass one or more column names to `LIST` to display only those columns:
+
+```text
+pyDb> USE products
+pyDb> LIST name price
+name | price
+--------------------
+Keyboard | 49.9
+Mouse | 19.5
+```
+
+If a requested column does not exist, pyDb prints a warning and leaves the
+database unchanged:
+
+```text
+pyDb> LIST name unknown_column
+WARNING: Column(s) not found in 'products': unknown_column
+```
 
 ### Add a column later
 

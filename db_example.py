@@ -1,4 +1,4 @@
-from lib.dbase3 import Db3, __version__
+from lib.wrapp_dbase3 import Db3, __version__
 
 print("="*55)
 print("dBase3 | lib.version:", __version__)
