@@ -1,0 +1,4 @@
+{
+  "data_path": "./data",
+  "default_database": "data.db"
+}

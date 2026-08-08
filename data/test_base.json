@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "table": "test",
+  "columns": [
+    {"field": "uid", "name": "id", "width": 5},
+    {"field": "selector", "name": "selector", "width": 10},
+    {"field": "type", "name": "type", "width": 20},
+    {"field": "text", "name": "text", "width": 20},
+    {"field": "key", "name": "key", "width": 3}
+  ]
+}

@@ -1,13 +1,109 @@
+import argparse
 import sqlite3
 import os, csv, json
 import xml.etree.ElementTree as ET
+from lib.wrapp_terminal import Terminal
 
 __version__ = "0.1.5" # 2025/02
 
 
 DEBUG = False
-DB_FILE = "main.sql" # Main database file (persistent storage)
+TERM = Terminal()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "py_base.json")
 EXPORT_DIR = "export"
+
+
+def load_config():
+    """Loads paths and defaults from the project configuration file."""
+    with open(CONFIG_FILE, "r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    data_path = config.get("data_path")
+    default_database = config.get("default_database")
+    if not isinstance(data_path, str) or not data_path:
+        raise ValueError("'data_path' must be a non-empty string")
+    if not isinstance(default_database, str) or not default_database:
+        raise ValueError("'default_database' must be a non-empty string")
+
+    return config
+
+
+def parse_arguments():
+    """Parses optional database and table-definition arguments."""
+    parser = argparse.ArgumentParser(description="pyDb Emulator")
+    parser.add_argument(
+        "--name",
+        metavar="DATABASE",
+        help="database filename stored in the configured data directory",
+    )
+    parser.add_argument(
+        "--crea",
+        metavar="DEFINITION.json",
+        help="create a table from a JSON definition in the configured data directory",
+    )
+    return parser.parse_args()
+
+
+def data_file(data_dir, filename):
+    """Returns a data-directory path while preventing directory traversal."""
+    clean_name = os.path.basename(filename)
+    if clean_name != filename or clean_name in ("", ".", ".."):
+        raise ValueError("filename must not contain a directory path")
+    return os.path.join(data_dir, clean_name)
+
+
+def create_table_from_definition(filename):
+    """Creates a text-based SQLite table from a JSON columns definition."""
+    definition_path = data_file(DATA_DIR, filename)
+    if not os.path.isfile(definition_path):
+        raise FileNotFoundError(f"Definition file '{definition_path}' was not found.")
+
+    with open(definition_path, "r", encoding="utf-8") as definition_file:
+        definition = json.load(definition_file)
+
+    columns = definition.get("columns")
+    if not isinstance(columns, list) or not columns:
+        raise ValueError("JSON definition must contain a non-empty 'columns' list.")
+
+    column_names = []
+    for column in columns:
+        if not isinstance(column, dict) or not isinstance(column.get("field"), str):
+            raise ValueError("Each item in 'columns' must contain a string 'field'.")
+        field = column["field"]
+        if not field.replace("_", "").isalnum() or field[0].isdigit():
+            raise ValueError(f"Invalid column name '{field}'.")
+        if field in column_names:
+            raise ValueError(f"Duplicate column name '{field}'.")
+        column_names.append(field)
+
+    fallback_table_name = os.path.splitext(os.path.basename(filename))[0]
+    table_name = definition.get("table", fallback_table_name)
+    if not isinstance(table_name, str) or not table_name:
+        raise ValueError("'table' must be a non-empty string when provided.")
+    if not table_name.replace("_", "").isalnum() or table_name[0].isdigit():
+        raise ValueError(f"Invalid table name '{table_name}'.")
+
+    column_definitions = []
+    for field in column_names:
+        sql_type = "INTEGER PRIMARY KEY" if field == "uid" else "TEXT"
+        column_definitions.append(f'"{field}" {sql_type}')
+
+    cursor.execute(
+        f'CREATE TABLE IF NOT EXISTS "{table_name}" ({", ".join(column_definitions)})'
+    )
+    conn.commit()
+    print(f"Table '{table_name}' created from '{filename}'.")
+
+
+try:
+    CONFIG = load_config()
+    ARGS = parse_arguments()
+    DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, CONFIG["data_path"]))
+    os.makedirs(DATA_DIR, exist_ok=True)
+    DB_FILE = data_file(DATA_DIR, ARGS.name or CONFIG["default_database"])
+except (OSError, ValueError, json.JSONDecodeError) as error:
+    raise SystemExit(f"Configuration error: {error}")
 
 # Ensure the export directory exists
 if not os.path.exists(EXPORT_DIR):
@@ -15,6 +111,13 @@ if not os.path.exists(EXPORT_DIR):
 
 conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
+
+if ARGS.crea:
+    try:
+        create_table_from_definition(ARGS.crea)
+    except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
+        conn.close()
+        raise SystemExit(f"Create error: {error}")
 
 # Default active table (None at start)
 active_table = None
@@ -66,7 +169,7 @@ def show_tables():
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     tables = cursor.fetchall()
     if tables:
-        print("Tables in database:")
+        TERM.y("Tables in database:")
         for table in tables:
             print(f"- {table[0]}")
     else:
@@ -82,8 +185,8 @@ def show_structure():
         cursor.execute(f"PRAGMA table_info({active_table})")
         columns = cursor.fetchall()
         if columns:
-            print(f"Structure of '{active_table}':")
-            print(f"{'Column':<20}{'Type':<10}{'Primary Key'}")
+            TERM.y(f"Structure of '{active_table}':")
+            TERM.y(f"{'Column':<20}{'Type':<10}{'Primary Key'}")
             print("-" * 40)
             for col in columns:
                 print(f"{col[1]:<20}{col[2]:<10}{'YES' if col[5] else 'NO'}")
@@ -191,7 +294,7 @@ def execute_command(command):
                 column_names = [desc[0] for desc in cursor.description] if cursor.description else []
 
                 if column_names:
-                    print(" | ".join(column_names))
+                    TERM.y(" | ".join(column_names))
                     print("-" * (len(column_names) * 10))
 
                 for row in rows:
@@ -401,15 +504,35 @@ def execute_command(command):
                 print(f"SQL Error: {e}")
         
         elif base_command == "HELP":
-            print("""
--------------------
-Available Commands:
--------------------
-CREATE <table_name>    - Creates a new table in main.sql (id INTEGER PRIMARY KEY, data TEXT)
+            TERM.y("-------------------")
+            TERM.y("Available Commands:")
+            TERM.y("-------------------")
+            help_lines = (
+                ("CREATE", " <table_name>    - Creates a new table in the active database (id INTEGER PRIMARY KEY, data TEXT)"),
+                ("INSERT", " (columns) VALUES (values) - Inserts data into the active table"),
+                ("SELECT", "                 - Displays all records from the active table"),
+                ("DELETE", " WHERE <condition> - Deletes records from the active table"),
+                ("DROP", " <table_name>      - Drops (removes) a table from the active database"),
+                ("LIST", "                   - Lists all records from the active table"),
+                ("USE", " <table>            - Sets the active table to use for other commands"),
+                ("SHOW", "                   - Lists all tables in the database"),
+                ("STRUCT", "                 - Displays the structure of the active table"),
+                ("MODIF", " ADD <col> <type> - Adds a column to the active table"),
+                ("MODIF", " DROP <col>       - Removes a column from the active table"),
+                ("SQL", ' "<query>"          - Executes raw SQL query'),
+                ("RUN", " <file>.dbs         - Executes dBASE III commands from a .dbs script file"),
+                ("HELP", "                   - Displays this help message"),
+                ("EXIT", "                   - Exits the emulator"),
+            )
+            for keyword, description in help_lines:
+                print(f"{TERM.style(keyword, fg='bright_yellow', bold=True)}{description}")
+            if False:  # Replaced by the colored command list above.
+                print("""\
+CREATE <table_name>    - Creates a new table in the active database (id INTEGER PRIMARY KEY, data TEXT)
 INSERT (columns) VALUES (values) - Inserts data into the active table
 SELECT                 - Displays all records from the active table
 DELETE WHERE <condition> - Deletes records from the active table
-DROP <table_name>      - Drops (removes) a table from main.sql
+DROP <table_name>      - Drops (removes) a table from the active database
 LIST                   - Lists all records from the active table
 USE <table>            - Sets the active table to use for other commands
 SHOW                   - Lists all tables in the database
@@ -428,12 +551,14 @@ EXIT                   - Exits the emulator
     return True
 
 # Main loop
-print("="*50)
-print(f"pyDb Emulator v{__version__} (SQLite backend: {DB_FILE})")
+print("=" * 50)
+print(f"{TERM.style(f'pyDb Emulator v{__version__}', fg='bright_yellow', bold=True)} | SQLite backend:")
+print(DB_FILE)
+print("=" * 50)
 print("Type 'HELP' for available commands or 'EXIT' to quit.")
 
 while True:
-    command = input("pyDb> ").strip()
+    command = input(TERM.style("pyDb> ", fg="bright_yellow", bold=True)).strip()
     if not execute_command(command):
         break
 
