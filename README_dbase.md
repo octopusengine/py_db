@@ -24,7 +24,7 @@ This opens the configured default database and immediately displays the
 `pyDb>` prompt:
 
 ```text
-pyDb Emulator v0.1.5 (SQLite backend: ...\\data\\data.db)
+pyDb Emulator v0.4.0 (SQLite backend: ...\\data\\data.db)
 pyDb> SHOW
 No tables found.
 pyDb> EXIT
@@ -64,19 +64,22 @@ pyDb> STRUCT
 
 ## Configuration
 
-The project-root file [`py_base.json`](py_base.json) defines the default data
-directory and database filename:
+The project-root file [`py_dbase.json`](py_dbase.json) defines the default data
+directory, database filename, and SQL debug setting:
 
 ```json
 {
   "data_path": "./data",
-  "default_database": "data.db"
+  "default_database": "data.db",
+  "debug": false
 }
 ```
 
 `data_path` is resolved relative to the directory containing `py_dbase.py`.
 With the shipped settings, running without arguments opens
 `data/data.db`. The directory is created automatically when necessary.
+Executed SQL is hidden by default. Use `--debug` for diagnostic output, or
+`--no-debug` to override a configuration that enables it.
 
 ## Startup options
 
@@ -90,7 +93,7 @@ python py_dbase.py --name projects.db
 ```
 
 This opens (or creates) `data/projects.db`; it does not change the default in
-`py_base.json`. The argument is a filename only, so database files always stay
+`py_dbase.json`. The argument is a filename only, so database files always stay
 inside the configured data directory.
 
 To list tables without opening the interactive prompt:
@@ -98,6 +101,7 @@ To list tables without opening the interactive prompt:
 ```bash
 python py_dbase.py --list
 python py_dbase.py --name projects.db --list
+python py_dbase.py --list --format json
 ```
 
 Short forms are available for the common command-line options:
@@ -106,9 +110,16 @@ Short forms are available for the common command-line options:
 python py_dbase.py -h          # help
 python py_dbase.py -v          # version
 python py_dbase.py -l          # list tables and exit
+python py_dbase.py -l --json   # list tables as JSON and exit
 python py_dbase.py -c tasks_base.json
 python py_dbase.py --create tasks_base.json
 ```
+
+`--list --format json` (or `--list --json`) writes only one JSON object to
+standard output, for example `{"database":"projects.db","tables":["orders"]}`.
+It is therefore suitable for scripts. The CLI exits with status `0` after a
+successful operation, `1` for a startup/database error, and `2` for invalid
+configuration or command-line arguments.
 
 ### Create a table from JSON
 
@@ -157,9 +168,12 @@ python py_dbase.py --name projects.db --crea tasks_base.json
 | `CREATE <table> (<columns>)` | Creates a table with explicit SQLite column definitions. |
 | `USE <table>` | Selects a table for commands that use the active table. |
 | `SHOW` | Lists all tables in the current database file. |
-| `LIST [<col1> <col2> ...]` | Displays all rows, optionally limited to named columns, in the active table. |
+| `LIST [<cols>] [WHERE …] [ORDER BY …] [LIMIT …]` | Displays filtered, ordered, or paged active-table rows. |
+| `FIND <condition>` / `LOCATE FOR <condition>` | Displays the first matching active-table row. |
 | `STRUCT` | Displays the active table's columns. |
 | `INSERT (columns) VALUES (values)` | Adds a row to the active table. |
+| `UPDATE SET <col>=<value> WHERE <condition>` | Changes fields in matching rows. |
+| `REPLACE <col> WITH <value> FOR <condition>` | dBASE-style form of an update. |
 | `DELETE WHERE <condition>` | Deletes rows from the active table. |
 | `DROP <table>` | Removes a table after `Y/N` confirmation. |
 | `MODIF ADD <column> <type>` | Adds a column to the active table. |
@@ -236,6 +250,32 @@ database unchanged:
 ```text
 pyDb> LIST name unknown_column
 WARNING: Column(s) not found in 'products': unknown_column
+```
+
+### Filter, order, limit, and page rows
+
+`LIST` accepts standard SQLite conditions and validates all selected and
+ordering columns. `LIMIT` may use `OFFSET`; alternatively use one-based
+`PAGE` with `SIZE`:
+
+```text
+pyDb> LIST name price WHERE in_stock=1 ORDER BY price DESC LIMIT 10 OFFSET 20
+pyDb> LIST name price ORDER BY name PAGE 2 SIZE 25
+```
+
+The latter displays records 26–50 in name order. Do not combine `LIMIT` and
+`PAGE` in a single command.
+
+### Find and update records
+
+`FIND` and `LOCATE FOR` display the first matching record. Updates require a
+condition so an accidental command cannot modify the complete table:
+
+```text
+pyDb> FIND name='Mouse'
+pyDb> LOCATE FOR price < 20
+pyDb> UPDATE SET price=17.90 WHERE name='Mouse'
+pyDb> REPLACE in_stock WITH 0 FOR name='Mouse'
 ```
 
 ### Add a column later

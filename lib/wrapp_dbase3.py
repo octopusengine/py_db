@@ -3,12 +3,13 @@
 import csv
 import json
 import os
+import re
 import sqlite3
 import xml.etree.ElementTree as ET
 
 from .wrapp_terminal import Terminal
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 COMMANDS = {
     "CREA": "CREATE",
@@ -17,6 +18,10 @@ COMMANDS = {
     "DELE": "DELETE",
     "DROP": "DROP",
     "LIST": "LIST",
+    "FIND": "FIND",
+    "LOCA": "LOCATE",
+    "UPDA": "UPDATE",
+    "REPL": "REPLACE",
     "HELP": "HELP",
     "EXIT": "EXIT",
     "RUN": "RUN",
@@ -31,10 +36,15 @@ COMMANDS = {
 HELP_LINES = (
     ("CREATE", " <table_name>    - Creates a table with default columns."),
     ("INSERT", " (columns) VALUES (values) - Inserts a row into the active table."),
-    ("SELECT", " [<col1> <col2> ...] - Displays active-table rows."),
+    ("SELECT", " [LIST options]    - Alias for LIST."),
     ("DELETE", " WHERE <condition> - Deletes active-table rows."),
     ("DROP", " <table_name>      - Removes a table after confirmation."),
-    ("LIST", " [<col1> <col2> ...] - Lists selected active-table columns."),
+    ("LIST", " [cols] [WHERE <condition>] [ORDER BY <col> [ASC|DESC]]"),
+    ("", " [LIMIT <count> [OFFSET <count>] | PAGE <number> SIZE <count>]"),
+    ("FIND", " <condition>      - Finds and displays the first matching record."),
+    ("LOCATE", " FOR <condition>  - Alias for FIND using dBASE-style syntax."),
+    ("UPDATE", " SET <col>=<value> WHERE <condition> - Updates matching records."),
+    ("REPLACE", " <col> WITH <value> FOR <condition> - dBASE-style update."),
     ("USE", " <table>            - Selects the active table."),
     ("SHOW", "                   - Lists tables in the current database."),
     ("STRUCT", "                 - Displays the active table structure."),
@@ -64,12 +74,114 @@ def _valid_identifier(name):
     )
 
 
+def _split_sql_items(text):
+    """Split comma-separated SQL fragments without splitting quoted values."""
+
+    items, current = [], []
+    quote = None
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if quote:
+            current.append(character)
+            if character == quote:
+                if index + 1 < len(text) and text[index + 1] == quote:
+                    current.append(text[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif character in ("'", '"'):
+            quote = character
+            current.append(character)
+        elif character == ",":
+            item = "".join(current).strip()
+            if not item:
+                raise ValueError("Empty value in a comma-separated list.")
+            items.append(item)
+            current = []
+        else:
+            current.append(character)
+        index += 1
+
+    if quote:
+        raise ValueError("Unterminated quoted value.")
+    item = "".join(current).strip()
+    if not item:
+        raise ValueError("Empty value in a comma-separated list.")
+    items.append(item)
+    return items
+
+
+def _split_keyword(text, keyword):
+    """Split at the first whole keyword outside single or double quotes."""
+
+    quote = None
+    upper_keyword = keyword.upper()
+    index = 0
+    while index <= len(text) - len(keyword):
+        character = text[index]
+        if quote:
+            if character == quote:
+                if index + 1 < len(text) and text[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if character in ("'", '"'):
+            quote = character
+            index += 1
+            continue
+        before = text[index - 1] if index else " "
+        after_index = index + len(keyword)
+        after = text[after_index] if after_index < len(text) else " "
+        if (
+            text[index:after_index].upper() == upper_keyword
+            and not (before.isalnum() or before == "_")
+            and not (after.isalnum() or after == "_")
+        ):
+            return text[:index].strip(), text[after_index:].strip()
+        index += 1
+    return None, None
+
+
+def _list_clause_matches(text):
+    """Locate LIST clauses while ignoring clause-looking quoted SQL values."""
+
+    matches = []
+    quote = None
+    index = 0
+    pattern = re.compile(r"(WHERE|ORDER\s+BY|LIMIT|OFFSET|PAGE|SIZE)\b", re.I)
+    while index < len(text):
+        character = text[index]
+        if quote:
+            if character == quote:
+                if index + 1 < len(text) and text[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if character in ("'", '"'):
+            quote = character
+            index += 1
+            continue
+        previous = text[index - 1] if index else " "
+        match = pattern.match(text, index)
+        if match and not (previous.isalnum() or previous == "_"):
+            matches.append((match.start(), match.end(), match.group(1)))
+            index = match.end()
+            continue
+        index += 1
+    return matches
+
+
 class Db3:
     """Interactive dBASE-style command interpreter backed by SQLite."""
 
     COMMANDS = COMMANDS
 
-    def __init__(self, db_file="main.sql", export_dir="export", debug=True, terminal=None):
+    def __init__(self, db_file="main.sql", export_dir="export", debug=False, terminal=None):
         self.db_file = db_file
         self.export_dir = export_dir
         self.debug_mode = debug
@@ -145,18 +257,28 @@ class Db3:
         self.conn.commit()
         print(f"Table '{table_name}' created from JSON definition.")
 
-    def cmd_show(self):
+    def cmd_show(self, output_format="text"):
         self.cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
         tables = self.cursor.fetchall()
+        table_names = [table_name for (table_name,) in tables]
+        if output_format == "json":
+            print(
+                json.dumps(
+                    {"database": os.path.basename(self.db_file), "tables": table_names},
+                    ensure_ascii=False,
+                )
+            )
+            return table_names
         if not tables:
             print("No tables found.")
-            return
+            return table_names
         self.term.y("Tables in database:")
         for (table_name,) in tables:
             marker = " (ACTIVE)" if table_name == self.active_table else ""
             print(f"- {table_name}{marker}")
+        return table_names
 
     def cmd_use(self, table_name):
         if not table_name:
@@ -173,13 +295,77 @@ class Db3:
         self.cursor.execute(f"PRAGMA table_info({_quote_identifier(self.active_table)})")
         return [column[1] for column in self.cursor.fetchall()]
 
-    def cmd_list(self, requested_columns=None):
+    def _parse_list_arguments(self, arguments):
+        """Parse LIST's lightweight WHERE/ORDER/LIMIT and paging clauses."""
+
+        if isinstance(arguments, (list, tuple)):
+            arguments = " ".join(arguments)
+        arguments = (arguments or "").strip()
+        matches = _list_clause_matches(arguments)
+        clauses = {}
+        columns_part = arguments[: matches[0][0]].strip() if matches else arguments
+        for position, match in enumerate(matches):
+            clause = re.sub(r"\s+", " ", match[2].upper())
+            value_end = matches[position + 1][0] if position + 1 < len(matches) else len(arguments)
+            value = arguments[match[1] : value_end].strip()
+            if clause in clauses:
+                raise ValueError(f"LIST clause '{clause}' may be used only once.")
+            if not value:
+                raise ValueError(f"LIST clause '{clause}' requires a value.")
+            clauses[clause] = value
+
+        allowed_clause_order = ["WHERE", "ORDER BY", "LIMIT", "OFFSET", "PAGE", "SIZE"]
+        encountered = [re.sub(r"\s+", " ", match[2].upper()) for match in matches]
+        if encountered != sorted(encountered, key=allowed_clause_order.index):
+            raise ValueError("LIST clauses must be ordered as WHERE, ORDER BY, LIMIT/OFFSET, PAGE/SIZE.")
+
+        columns = columns_part.replace(",", " ").split() if columns_part else []
+        parsed = {"columns": columns, "where": clauses.get("WHERE"), "order_by": None,
+                  "limit": None, "offset": 0}
+        if "ORDER BY" in clauses:
+            parts = clauses["ORDER BY"].split()
+            if len(parts) not in (1, 2) or (len(parts) == 2 and parts[1].upper() not in {"ASC", "DESC"}):
+                raise ValueError("Use: ORDER BY <column> [ASC|DESC]")
+            parsed["order_by"] = (parts[0], parts[1].upper() if len(parts) == 2 else "ASC")
+
+        def positive_integer(value, label, allow_zero=False):
+            if not re.fullmatch(r"\d+", value) or (not allow_zero and int(value) == 0):
+                comparison = "a non-negative" if allow_zero else "a positive"
+                raise ValueError(f"{label} must be {comparison} integer.")
+            return int(value)
+
+        if "LIMIT" in clauses:
+            parsed["limit"] = positive_integer(clauses["LIMIT"], "LIMIT")
+        if "OFFSET" in clauses:
+            if parsed["limit"] is None:
+                raise ValueError("OFFSET requires LIMIT.")
+            parsed["offset"] = positive_integer(clauses["OFFSET"], "OFFSET", allow_zero=True)
+        has_page = "PAGE" in clauses or "SIZE" in clauses
+        if has_page:
+            if "PAGE" not in clauses or "SIZE" not in clauses:
+                raise ValueError("Paging requires both PAGE <number> and SIZE <count>.")
+            if parsed["limit"] is not None:
+                raise ValueError("Use either LIMIT/OFFSET or PAGE/SIZE, not both.")
+            page = positive_integer(clauses["PAGE"], "PAGE")
+            size = positive_integer(clauses["SIZE"], "SIZE")
+            parsed["limit"] = size
+            parsed["offset"] = (page - 1) * size
+        return parsed
+
+    def _display_rows(self, column_names, rows):
+        self.term.y(" | ".join(column_names))
+        print("-" * (len(column_names) * 10))
+        for row in rows:
+            print(" | ".join("" if value is None else str(value) for value in row))
+
+    def cmd_list(self, arguments=""):
         if self.active_table is None:
             print("No table selected. Use 'USE <table>' first.")
-            return
+            return []
 
-        requested_columns = requested_columns or []
         try:
+            options = self._parse_list_arguments(arguments)
+            requested_columns = options["columns"]
             available_columns = self._active_table_columns()
             missing_columns = [
                 column for column in requested_columns if column not in available_columns
@@ -189,24 +375,140 @@ class Db3:
                     f"WARNING: Column(s) not found in '{self.active_table}': "
                     + ", ".join(missing_columns)
                 )
-                return
+                return []
+            if options["order_by"] and options["order_by"][0] not in available_columns:
+                print(
+                    f"WARNING: Column '{options['order_by'][0]}' not found in "
+                    f"'{self.active_table}'."
+                )
+                return []
 
             column_names = requested_columns or available_columns
             select_columns = ", ".join(_quote_identifier(column) for column in column_names)
             query = f"SELECT {select_columns} FROM {_quote_identifier(self.active_table)}"
+            if options["where"]:
+                query += f" WHERE {options['where']}"
+            if options["order_by"]:
+                column, direction = options["order_by"]
+                query += f" ORDER BY {_quote_identifier(column)} {direction}"
+            if options["limit"] is not None:
+                query += f" LIMIT {options['limit']} OFFSET {options['offset']}"
             self._debug(query)
             self.cursor.execute(query)
             rows = self.cursor.fetchall()
             if not rows:
                 print(f"No records found in '{self.active_table}'.")
-                return
+                return []
 
-            self.term.y(" | ".join(column_names))
-            print("-" * (len(column_names) * 10))
-            for row in rows:
-                print(" | ".join(map(str, row)))
+            self._display_rows(column_names, rows)
+            return rows
+        except (ValueError, sqlite3.Error) as error:
+            print(f"SQL Error: {error}")
+            return []
+
+    def cmd_find(self, condition):
+        """Display the first active-table record matching a SQL condition."""
+
+        if self.active_table is None:
+            print("No table selected. Use 'USE <table>' first.")
+            return None
+        condition = (condition or "").strip()
+        if condition.upper().startswith("FOR "):
+            condition = condition[4:].strip()
+        if condition.upper().startswith("WHERE "):
+            condition = condition[6:].strip()
+        if not condition:
+            print("Missing condition. Use: FIND <condition> or LOCATE FOR <condition>")
+            return None
+        try:
+            columns = self._active_table_columns()
+            query = (
+                f"SELECT {', '.join(_quote_identifier(column) for column in columns)} "
+                f"FROM {_quote_identifier(self.active_table)} WHERE {condition} LIMIT 1"
+            )
+            self._debug(query)
+            self.cursor.execute(query)
+            row = self.cursor.fetchone()
+            if row is None:
+                print(f"No matching record found in '{self.active_table}'.")
+                return None
+            self._display_rows(columns, [row])
+            return row
         except sqlite3.Error as error:
             print(f"SQL Error: {error}")
+            return None
+
+    def _parse_assignments(self, text, separator):
+        columns = self._active_table_columns()
+        assignments = []
+        for item in _split_sql_items(text):
+            if separator == "=":
+                name, delimiter, value = item.partition("=")
+                if not delimiter:
+                    name, value = None, None
+                else:
+                    name, value = name.strip(), value.strip()
+            else:
+                name, value = _split_keyword(item, separator)
+            if name is None or not name or not value:
+                raise ValueError(f"Each assignment must use '<column> {separator} <value>'.")
+            if name not in columns:
+                raise ValueError(f"Column '{name}' does not exist in '{self.active_table}'.")
+            assignments.append(f"{_quote_identifier(name)} = {value}")
+        return assignments
+
+    def _change_matching_records(self, assignments, condition):
+        if not condition:
+            print("A WHERE/FOR condition is required to avoid updating every record.")
+            return False
+        query = (
+            f"UPDATE {_quote_identifier(self.active_table)} SET {', '.join(assignments)} "
+            f"WHERE {condition}"
+        )
+        try:
+            self._debug(query)
+            self.cursor.execute(query)
+            self.conn.commit()
+            print(f"{self.cursor.rowcount} record(s) updated in '{self.active_table}'.")
+            return True
+        except sqlite3.Error as error:
+            print(f"SQL Error: {error}")
+            return False
+
+    def cmd_update(self, arguments):
+        """Run UPDATE SET ... WHERE ... against the active table."""
+
+        if self.active_table is None:
+            print("No table selected. Use 'USE <table>' first.")
+            return False
+        before_where, condition = _split_keyword(arguments or "", "WHERE")
+        set_match = re.fullmatch(r"SET\s+(.+)", before_where or "", re.I | re.S)
+        if before_where is None or set_match is None:
+            print("Usage: UPDATE SET <column>=<value> [, ...] WHERE <condition>")
+            return False
+        try:
+            assignments = self._parse_assignments(set_match.group(1).strip(), "=")
+        except ValueError as error:
+            print(f"Update error: {error}")
+            return False
+        return self._change_matching_records(assignments, condition)
+
+    def cmd_replace(self, arguments):
+        """Run dBASE-style REPLACE <column> WITH <value> FOR <condition>."""
+
+        if self.active_table is None:
+            print("No table selected. Use 'USE <table>' first.")
+            return False
+        assignments_text, condition = _split_keyword(arguments or "", "FOR")
+        if assignments_text is None:
+            print("Usage: REPLACE <column> WITH <value> [, ...] FOR <condition>")
+            return False
+        try:
+            assignments = self._parse_assignments(assignments_text, "WITH")
+        except ValueError as error:
+            print(f"Replace error: {error}")
+            return False
+        return self._change_matching_records(assignments, condition)
 
     def cmd_struct(self):
         if self.active_table is None:
@@ -402,11 +704,9 @@ class Db3:
             print(f"Error executing file: {error}")
 
     def select(self, condition=""):
-        """Compatibility helper that lists active-table rows."""
+        """Compatibility helper for SELECT, which is an alias for LIST."""
 
-        if condition:
-            print("SELECT conditions are not supported; use SQL for custom queries.")
-        self.cmd_list()
+        return self.cmd_list(condition)
 
     def _show_help(self):
         self.term.y("-------------------")
@@ -458,7 +758,13 @@ class Db3:
         elif base_command == "INSERT":
             self.cmd_insert(args)
         elif base_command in {"LIST", "SELECT"}:
-            self.cmd_list(args.split() if args else [])
+            self.cmd_list(args)
+        elif base_command in {"FIND", "LOCATE"}:
+            self.cmd_find(args)
+        elif base_command == "UPDATE":
+            self.cmd_update(args)
+        elif base_command == "REPLACE":
+            self.cmd_replace(args)
         elif base_command == "DELETE":
             self.cmd_delete(args)
         elif base_command == "DROP":

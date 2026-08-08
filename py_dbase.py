@@ -3,27 +3,32 @@
 import argparse
 import json
 import os
+import sqlite3
+import sys
 
 from lib.wrapp_dbase3 import Db3, __version__
 from lib.wrapp_terminal import Terminal
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "py_base.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "py_dbase.json")
 TERM = Terminal()
 
 
 def load_config():
-    """Load the data directory and default database from py_base.json."""
+    """Load the data directory, database, and debug setting from py_dbase.json."""
 
     with open(CONFIG_FILE, "r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
     data_path = config.get("data_path")
     default_database = config.get("default_database")
+    debug = config.get("debug", False)
     if not isinstance(data_path, str) or not data_path:
         raise ValueError("'data_path' must be a non-empty string")
     if not isinstance(default_database, str) or not default_database:
         raise ValueError("'default_database' must be a non-empty string")
+    if not isinstance(debug, bool):
+        raise ValueError("'debug' must be true or false")
     return config
 
 
@@ -54,7 +59,36 @@ def parse_arguments():
         action="store_true",
         help="list tables in the selected database and exit",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="output format for --list (default: text)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_const",
+        const="json",
+        dest="format",
+        help="shorthand for --format json with --list",
+    )
+    debug_group = parser.add_mutually_exclusive_group()
+    debug_group.add_argument(
+        "--debug",
+        action="store_true",
+        help="print executed SQLite statements",
+    )
+    debug_group.add_argument(
+        "--no-debug",
+        action="store_true",
+        help="suppress executed SQLite statements",
+    )
+    arguments = parser.parse_args()
+    if arguments.format != "text" and not arguments.list:
+        parser.error("--format/--json may only be used with --list")
+    if arguments.format == "json" and arguments.crea:
+        parser.error("--format json cannot be combined with --create")
+    return arguments
 
 
 def data_file(data_dir, filename):
@@ -101,21 +135,23 @@ def main():
         os.makedirs(data_dir, exist_ok=True)
         db_file = data_file(data_dir, arguments.name or config["default_database"])
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        raise SystemExit(f"Configuration error: {error}") from error
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
 
     database = None
     try:
         database = Db3(
             db_file,
             export_dir=os.path.join(BASE_DIR, "export"),
+            debug=True if arguments.debug else False if arguments.no_debug else config["debug"],
             terminal=TERM,
         )
         if arguments.crea:
             create_table_from_definition(database, data_dir, arguments.crea)
 
         if arguments.list:
-            database.cmd_show()
-            return
+            database.cmd_show(arguments.format)
+            return 0
 
         print("=" * 50)
         print(
@@ -130,12 +166,17 @@ def main():
             command = input(TERM.style("pyDb> ", fg="bright_yellow", bold=True)).strip()
             if not database.execute_dbase_command(command):
                 break
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        raise SystemExit(f"Start error: {error}") from error
+        return 0
+    except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
+        print(f"Start error: {error}", file=sys.stderr)
+        return 1
+    except EOFError:
+        print("\nExiting emulator...")
+        return 0
     finally:
         if database is not None:
             database.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
